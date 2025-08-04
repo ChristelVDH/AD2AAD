@@ -208,7 +208,7 @@ Function Assert-GroupName {
 }
 
 Function Resolve-AzureGroup {
-	[OutputType([Microsoft.Graph.PowerShell.Models.MicrosoftGraphGroup])]
+	[OutputType([Microsoft.Graph.PowerShell.Models.IMicrosoftGraphGroup])]
 	[CmdletBinding(DefaultParameterSetName = 'Named')]
 	param(
 		[Parameter(Mandatory, ParameterSetName = 'Named', ValueFromPipeline)]
@@ -250,7 +250,7 @@ Function Resolve-AzureGroup {
 }
 
 Function Confirm-AzureGroup {
-	[OutputType([Microsoft.Graph.PowerShell.Models.MicrosoftGraphGroup])]
+	[OutputType([Microsoft.Graph.PowerShell.Models.IMicrosoftGraphGroup])]
 	param(
 		[Parameter(Mandatory)][Alias('AzureGroupName')][string]$Name,
 		[Parameter()][ValidateNotNullOrEmpty()][string]$ScriptDescription = 'Created by Sync Script',
@@ -293,7 +293,7 @@ Function Confirm-AzureGroup {
 Function Confirm-GroupSync {
 	[OutputType([System.Void])]
 	param(
-		[Microsoft.Graph.PowerShell.Models.MicrosoftGraphGroup[]]$AzureGroups,
+		[Microsoft.Graph.PowerShell.Models.IMicrosoftGraphGroup[]]$AzureGroups,
 		[Microsoft.ActiveDirectory.Management.ADGroup[]]$ADGroups,
 		[Parameter(HelpMessage = 'Prefix for Azure groupnames, eg: INT- (=default)')]
 		[ValidateNotNullOrEmpty()]
@@ -444,7 +444,7 @@ Function Write-LogEntries {
 }
 
 Function Get-MDMDeviceInfo {
-	[OutputType([Microsoft.Graph.PowerShell.Models.MicrosoftGraphManagedDevice])]
+	[OutputType([Microsoft.Graph.PowerShell.Models.IMicrosoftGraphManagedDevice])]
 	[CmdletBinding(DefaultParameterSetName = 'User')]
 	param(
 		[Parameter(Mandatory, ParameterSetName = 'User')]
