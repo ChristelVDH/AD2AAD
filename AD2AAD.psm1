@@ -378,7 +378,7 @@ Function Confirm-GroupSync {
 		[ValidateNotNullOrEmpty()]
 		[Alias('GroupPrefix', 'Prefix')][string]$AzureGroupPrefix = 'INT-'
 	)
-	Write-LogEntry -Value "INFO: Checking $($AzureGroups.Count) Azure groups for existence in on-prem AD" -Severity 0
+	Write-LogEntry -Value "Checking $($AzureGroups.Count) Azure groups for existence in on-prem AD" -Severity 0
 	ForEach ($AzureGroup in $AzureGroups) {
 		try {
 			#divide Azure Group name into named tokens = prefix + name + User/Device nominator
@@ -497,13 +497,13 @@ Function Write-LogEntries {
 	[Void]$script:Output.Add([WritePassTime]::ToSentence($Script:StartTime))
 	Write-Warning -Message "All output will be cleared after returning or writing to log file!"
 	# remove empty strings and bearer token from output
-	$script:Output = $script:Output | Where-Object { (-not [string]::IsNullOrEmpty($_)) -and ($_ -notmatch '^@') }
+	$script:Output = $script:Output | Where-Object { (-not [string]::IsNullOrEmpty($_)) -and ($_ -notmatch '^\@.+$') }
 	$script:Output = @(switch ($Verbosity) {
 			0 { $Script:Output }
-			1 { $Script:Output.Where({ $_ -match '^(INFO|WARNING|ERROR|FATAL):' }) }
-			2 { $Script:Output.Where({ $_ -match '^(WARNING|ERROR|FATAL):' }) }
-			3 { $Script:Output.Where({ $_ -match '^(ERROR|FATAL):' }) }
-			4 { $Script:Output.Where({ $_ -match '^(FATAL):' }) }
+			1 { $Script:Output.Where({ $_ -match '^(INFO|WARNING|ERROR|FATAL|RESULT):' }) }
+			2 { $Script:Output.Where({ $_ -match '^(WARNING|ERROR|FATAL|RESULT):' }) }
+			3 { $Script:Output.Where({ $_ -match '^(ERROR|FATAL|RESULT):' }) }
+			4 { $Script:Output.Where({ $_ -match '^(FATAL|RESULT):' }) }
 		})
 	if ($OutLog.IsPresent) {
 		$Now = Get-Date -Format "MM-dd-yyyy_HHumm-ss"
@@ -1013,7 +1013,7 @@ Function Sync-ADGroups2AAD {
 		#Import-PowerShellDataFile -BindingVariable "SyncStr"
 		$ScriptDescription = "Sync-ADGroups2AAD v{0} run by {1}" -f $ScriptVersion, [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 		$Script:StartTime = Get-Date
-		Write-LogEntry -Value "Starting $($ScriptDescription) on $($Script:StartTime)"
+		Write-LogEntry -Value "RESULT: Starting $($ScriptDescription) on $($Script:StartTime)"
 		#save connection parameters in splatted hash table to renew token if necessary during script execution
 		$TokenParams = @{
 			TenantID               = $TenantID
@@ -1128,7 +1128,7 @@ Function Sync-ADGroups2AAD {
 	}
 
 	end {
-		Write-LogEntry -Value "Script $($ScriptDescription) finished at $(Get-Date) with $($script:Counters["Error"]) error(s)"
+		Write-LogEntry -Value "RESULT: Script $($ScriptDescription) finished at $(Get-Date) with $($script:Counters["Error"]) error(s)"
 		Write-LogEntries -SyncType $PSCmdlet.ParameterSetName -OutLog:$OutLog -Verbosity $Verbosity
 	}
 }
