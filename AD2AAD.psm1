@@ -174,7 +174,7 @@ Function Get-MGConnection {
 	$MgContext = Get-MgContext
 	#[Microsoft.Graph.PowerShell.Authentication.GraphSession]::Instance.AuthContext.Scopes
 	$MissingScopes = Compare-Object -ReferenceObject $RequiredScopes -DifferenceObject $MgContext.Scopes -PassThru | Where-Object { $_.SideIndicator -eq '<=' }
-	if ($MissingScopes) { Write-LogEntry -Value "Exiting script due to missing required scopes on App Registration <$($MgContext.AppName)>:$($nl)$($MissingScopes)" -Severity 4	}
+	if ($MissingScopes) { Write-LogEntry -Value "Exiting script due to missing required scopes on App Registration <$($MgContext.AppName)>:$($nl)$($MissingScopes)" -Severity 5	}
 	return $script:GraphHeader
 }
 
@@ -202,7 +202,7 @@ Function Initialize-GraphUri {
 	$Header = $script:GraphHeader.Clone()
 	if ($Consistency.IsPresent) { $Header.Add('ConsistencyLevel', 'Eventual') }
 	if ($PSCmdlet.ShouldProcess("Getting $($Script:GraphRoot)/$($Resource)", $GraphUri, "GraphData Retrieval")) {
-		Write-LogEntry -Value "Retrieving Graph data using Uri: $($GraphUri) with ConsistencyLevel set to Eventual ($($Consistency.IsPresent))" -Severity 0
+		Write-LogEntry -Value "Retrieving Graph data using Uri: $($GraphUri) with ConsistencyLevel set to Eventual ($($Consistency.IsPresent))"
 		$OutObj = Get-GraphQueryResults -uri $GraphUri -GraphHeader $Header -Paging:$Paging.IsPresent
 	}
 	else {
@@ -257,11 +257,11 @@ Function Assert-GroupName {
 	}
 	if ($Warnings.Count) {
 		[string]$Message = "Naming violations in AD group name <{0}>: {1}" -f $GroupName, $($Warnings -join ', ')
-		if ($Enforce.IsPresent) { $Asserted = $false; $Message = "Skipping groupsync due to " + $Message; $Severity = 3 }
-		else { $Asserted = $true; $Message = "Found " + $Message; $Severity = 2 }
+		if ($Enforce.IsPresent) { $Asserted = $false; $Message = "Skipping groupsync due to " + $Message; $Severity = 4 }
+		else { $Asserted = $true; $Message = "Found " + $Message; $Severity = 3 }
 		Write-LogEntry -Value $Message -Severity $Severity
 	}
-	else { Write-LogEntry -Value "Group name <$($GroupName)> is compliant with current naming conventions" -Severity 0 }
+	else { Write-LogEntry -Value "Group name <$($GroupName)> is compliant with current naming conventions" }
 	return $Asserted
 }
 
@@ -279,10 +279,10 @@ Function Resolve-AzureGroup {
 		if ($DuplicateAAdGroups) {
 			$SelectProps = @('Displayname', 'MemberCount', 'CreatedDateTime', 'Id')
 			foreach ($Group in $DuplicateAAdGroups) {
-				Write-LogEntry -Value "Found $($Group.Group.Count) duplicate Azure group(s) with DisplayName: $($Group.DisplayName)"
+				Write-LogEntry -Value "Found $($Group.Group.Count) duplicate Azure group(s) with DisplayName: $($Group.DisplayName)" -Severity 3
 				foreach ($DuplicateAAdGroup in $Group.Group) {
 					$MemberCount = Get-MgGroupMemberCount -GroupId $DuplicateAAdGroup.Id -ConsistencyLevel eventual
-					Write-LogEntry -Value "Found $($MemberCount) members in: $($DuplicateAAdGroup.DisplayName) ($($DuplicateAAdGroup.Id))" -Severity 0
+					Write-LogEntry -Value "Found $($MemberCount) members in: $($DuplicateAAdGroup.DisplayName) ($($DuplicateAAdGroup.Id))"
 					Add-Member -InputObject $DuplicateAAdGroup -MemberType NoteProperty -Name "MemberCount" -Value $MemberCount
 				}
 				#select the group(s) with the least members and newest creation date for removal
@@ -292,7 +292,13 @@ Function Resolve-AzureGroup {
 				if ($RemoveDuplicates) {
 					if (Assert-InteractiveShell) { 
 						$Groups2Remove | Select-Object -Property $SelectProps | Out-GridView -Title 'Select duplicate group(s) to remove' -PassThru | ForEach-Object { 
-							Remove-MgGroup -GroupId $_.Id -Confirm 
+							$GroupParams = @{
+								Uri     = "$($Script:GraphRoot)/groups/$($_.Id)"
+								Headers = $script:GraphHeader
+								Method  = 'DELETE'
+							}
+							Invoke-RestMethod @GroupParams
+							#Remove-MgGroup -GroupId $_.Id -Confirm 
 						}
 					}
 					else { $Groups2Remove | ForEach-Object { Remove-MgGroup -GroupId $_.Id -Confirm:$false } }
@@ -310,12 +316,11 @@ Function Resolve-AzureGroup {
 			All         = $true
 			Filter      = $Filter
 			Property    = "Id,CreatedDateTime,DisplayName,Description"
-			#OrderBy          = 'DisplayName'
 			Count       = $true
 			Consistency = $true
 		}
 		$AzureGroups = Initialize-GraphUri -Resource groups @GroupParams -WhatIf:$false
-		Write-LogEntry -Value "Retrieved $($AzureGroups.Count) groups using $($PSCmdlet.ParameterSetName) filter <$($Filter)>, checking for duplicates..." -Severity 0
+		Write-LogEntry -Value "Retrieved $($AzureGroups.Count) groups using $($PSCmdlet.ParameterSetName) filter <$($Filter)>, checking for duplicates..."
 	}
 	end { return $AzureGroups }
 }
@@ -324,7 +329,7 @@ Function Confirm-AzureGroup {
 	[OutputType([System.Management.Automation.PSCustomObject])]
 	param(
 		[Parameter(Mandatory)][Alias('AzureGroupName')][string]$Name,
-		[Parameter()][ValidateNotNullOrEmpty()][string]$ScriptDescription = 'Created by Sync Script',
+		[Parameter()][ValidateNotNullOrEmpty()][string]$Description = 'Created by Sync Script',
 		[switch]$CreateGroup
 	)
 	if ($script:AADGroups.Count -eq 0) { Write-Warning -Message "No AAD Groups cached, nothing to return..." }
@@ -332,21 +337,22 @@ Function Confirm-AzureGroup {
 		$AzureADGroup = @($script:AADGroups | Where-Object { $_.DisplayName -eq $Name })
 		if (-not $AzureADGroup) {
 			if ($CreateGroup.IsPresent) {
-				Write-LogEntry -Value "Creating new Azure group: $($Name)" -Severity 0
+				Write-LogEntry -Value "Creating new Azure group: $($Name)"
+				$MailNickname = $Name -replace '[_]', '-'
 				try {
 					$body = [ordered]@{
-						"description"     = $ScriptDescription
+						"description"     = $Description
 						"displayName"     = $Name
 						"groupTypes"      = @()
 						#"isAssignableToRole" = $true
 						"mailEnabled"     = $false
-						"mailNickname"    = $Name
+						"mailNickname"    = $MailNickname
 						"securityEnabled" = $true
 					} | ConvertTo-Json
 					$NewGroupUri = "$($Script:GraphRoot)/groups"
 					$NewGroup = Invoke-RestMethod -Method Post -Uri $NewGroupUri -Headers $script:GraphHeader -Body $body -ContentType 'application/json'
 				}
-				catch { Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $NewGroupUri) -Severity 3 }
+				catch { Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $NewGroupUri) -Severity 4 }
 				if ($NewGroup) {
 					#$AzureADGroup = Get-MgGroup -Filter "DisplayName eq '$Name'" -ConsistencyLevel eventual -CountVariable AZgroup -All
 					$GroupParams = @{
@@ -358,10 +364,10 @@ Function Confirm-AzureGroup {
 				}
 				if ($AzureADGroup) {
 					$script:AADGroups += $AzureADGroup
-					Write-LogEntry -Value "GroupMembership: Created new/empty Azure group: $($AzureADGroup.displayName)"
+					Write-LogEntry -Value "GroupMembership: Created new/empty Azure group: $($AzureADGroup.displayName)" -Severity 2
 				}
 			}
-			else { Write-LogEntry -Value "No such Azure group <$($Name)> found nor created, use parameter -CreateGroup if this is unexpected!" -Severity 2 }
+			else { Write-LogEntry -Value "No such Azure group <$($Name)> found nor created, use parameter -CreateGroup if this is unexpected!" -Severity 3 }
 		}
 		#make sure to return a single object, not an array of (eventual) duplicates
 		$AzureADGroup = Resolve-AzureGroup -Name $Name
@@ -376,9 +382,10 @@ Function Confirm-GroupSync {
 		[Microsoft.ActiveDirectory.Management.ADGroup[]]$ADGroups,
 		[Parameter(HelpMessage = 'Prefix for Azure groupnames, eg: INT- (=default)')]
 		[ValidateNotNullOrEmpty()]
-		[Alias('GroupPrefix', 'Prefix')][string]$AzureGroupPrefix = 'INT-'
+		[Alias('GroupPrefix', 'Prefix')][string]$AzureGroupPrefix = 'INT-',
+		[switch]$UpdateDescriptionFromAD
 	)
-	Write-LogEntry -Value "Checking $($AzureGroups.Count) Azure groups for existence in on-prem AD" -Severity 0
+	Write-LogEntry -Value "Checking $($AzureGroups.Count) Azure groups for existence in on-prem AD"
 	ForEach ($AzureGroup in $AzureGroups) {
 		try {
 			#divide Azure Group name into named tokens = prefix + name + User/Device nominator
@@ -388,11 +395,11 @@ Function Confirm-GroupSync {
 				switch ($NameParts['Suffix'].Value) {
 					'-U' { $GroupType = 'UserGroup' }
 					'-D' { $GroupType = 'DeviceGroup' }
-					default { Write-LogEntry -Value "Suffix mismatch in Azure GroupName: $($AzureGroup.displayName)" -Severity 2 }
+					default { Write-LogEntry -Value "Suffix mismatch in Azure GroupName: $($AzureGroup.displayName)" -Severity 3 }
 				}
-				if (-not ($ADGroups | Where-Object { $_.Name -eq $BaseName })) {
-					Write-LogEntry -Value "Trying to find matching AD group outside of current processing scope..." -Severity 0
-					try { Get-ADGroup -Identity $BaseName }
+				if (-not ($ADGroup = ($ADGroups | Where-Object { $_.Name -eq $BaseName }))) {
+					Write-LogEntry -Value "Trying to find matching AD group outside of current processing scope..."
+					try { $ADGroup = Get-ADGroup -Identity $BaseName }
 					catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
 						$Message = "$($GroupType) <$($AzureGroup.displayName)> only exists in Azure!"
 						#remove Azure only group(s) but only if selected by human interaction!
@@ -401,14 +408,34 @@ Function Confirm-GroupSync {
 							try { Remove-MgGroup -ObjectId $AzureGroup.Id -Confirm }
 							catch { Write-Error -Message $_.Exception }
 						}
-						else { Write-LogEntry -Value $Message -Severity 2 }
+						else { Write-LogEntry -Value $Message -Severity 3 }
 					}
-					catch { Write-LogEntry -Message $_.Exception.Message -Severity 3 }
+					catch { Write-LogEntry -Message $_.Exception.Message -Severity 4 }
+				}
+				else {
+					Write-LogEntry -Value "$($GroupType) <$($AzureGroup.displayName)> exists in both Azure and on-prem AD"
+					if ($UpdateDescriptionFromAD.IsPresent) {
+						if ($ADGroup.Description -ne $AzureGroup.Description) {
+							Write-LogEntry -Value "Updating Azure group <$($AzureGroup.displayName)> description from AD"
+							try {
+								$GroupParams = @{
+									headers     = $script:GraphHeader
+									body        = @{ description = $ADGroup.Description } | ConvertTo-Json
+									Uri         = "$($Script:GraphRoot)/groups/$($AzureGroup.Id)"
+									Method      = 'Patch'
+									ContentType = 'application/json'
+								}
+								Invoke-RestMethod @GroupParams
+								#Update-MgGroup -GroupId $AzureGroup.Id -Description $ADGroup.Description
+							}
+							catch { Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupParams.Uri) -Severity 4 }
+						}
+					}
 				}
 			}
-			else { Write-LogEntry -Value "Naming Convention mismatch in Azure GroupName: $($AzureGroup.displayName)" }
+			else { Write-LogEntry -Value "Naming Convention mismatch in Azure GroupName: $($AzureGroup.displayName)" -Severity 3 }
 		}
-		catch { Write-LogEntry -Value $_.Exception.Message -Severity 3 }
+		catch { Write-LogEntry -Value $_.Exception.Message -Severity 4 }
 	}#foreach AzureGroup
 }
 
@@ -434,7 +461,7 @@ Function Get-GraphQueryResults {
 			}
 		}
 	}
-	catch { Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $uri) -Severity 3 }
+	catch { Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $uri) -Severity 4 }
 	return $outobj
 }
 
@@ -468,15 +495,16 @@ function Write-LogEntry {
 	param (
 		[parameter(Mandatory, HelpMessage = "Value added to the log file.")][string]$Value,
 		[parameter(HelpMessage = "Severity for the log entry. 1 for Informational (default), 2 for Warning and 3 for Error.")]
-		[ValidateRange(0, 4)][int]$Severity = 1
+		[ValidateRange(0, 5)][int]$Severity = 1
 	)
 	if (-not [string]::IsNullOrEmpty($Value)) {
 		switch ($Severity) {
-			0 { $Message = $Value; Write-Verbose -Message $Value } #just add message as is to output
-			1 { $Message = "INFO: $($Value)"; Write-Verbose -Message $Value }
-			2 { $Message = "WARNING: $($Value)"; $script:Counters["Warning"]++; Write-Warning -Message $Value }
-			3 { $Message = "ERROR: $($Value)"; $script:Counters["Error"]++; Write-Error -Message $Value }
-			4 {
+			0 { $Message = $Value; Write-Verbose -Message $Value; continue } #just add message as is to output
+			1 { $Message = "VERBOSE: $($Value)"; Write-Verbose -Message $Value; continue }
+			2 { $Message = "INFO: $($Value)"; Write-Verbose -Message $Value; continue }
+			3 { $Message = "WARNING: $($Value)"; $script:Counters["Warning"]++; Write-Warning -Message $Value; continue }
+			4 { $Message = "ERROR: $($Value)"; $script:Counters["Error"]++; Write-Error -Message $Value; continue }
+			5 {
 				$Message = "FATAL: $($Value)"
 				$script:Counters["Error"]++
 				[void]$script:Output.Add($Message) # add to output before triggering trap{}
@@ -491,7 +519,7 @@ Function Write-LogEntries {
 	param(
 		[Parameter()][ValidateSet('OUSync', 'GroupSync')][string]$SyncType,
 		[parameter(HelpMessage = "Verbosity of log entry output. 0 for Everything, 1 for Informational (default), 2 for Warning and 3 for Error.")]
-		[ValidateRange(0, 4)][int]$Verbosity = 0,
+		[ValidateRange(0, 5)][int]$Verbosity = 0,
 		[Parameter()][switch]$OutLog
 	)
 	[Void]$script:Output.Add([WritePassTime]::ToSentence($Script:StartTime))
@@ -499,11 +527,12 @@ Function Write-LogEntries {
 	# remove empty strings and bearer token from output
 	$script:Output = $script:Output | Where-Object { (-not [string]::IsNullOrEmpty($_)) -and ($_ -notmatch '^\@.+$') }
 	$script:Output = @(switch ($Verbosity) {
-			0 { $Script:Output }
-			1 { $Script:Output.Where({ $_ -match '^(INFO|WARNING|ERROR|FATAL|RESULT):' }) }
-			2 { $Script:Output.Where({ $_ -match '^(WARNING|ERROR|FATAL|RESULT):' }) }
-			3 { $Script:Output.Where({ $_ -match '^(ERROR|FATAL|RESULT):' }) }
-			4 { $Script:Output.Where({ $_ -match '^(FATAL|RESULT):' }) }
+			0 { $Script:Output; continue }
+			1 { $Script:Output.Where({ $_ -match '^(VERBOSE|INFO|WARNING|ERROR|FATAL|RESULT):' }); continue }
+			2 { $Script:Output.Where({ $_ -match '^(INFO|WARNING|ERROR|FATAL|RESULT):' }); continue }
+			3 { $Script:Output.Where({ $_ -match '^(WARNING|ERROR|FATAL|RESULT):' }); continue }
+			4 { $Script:Output.Where({ $_ -match '^(ERROR|FATAL|RESULT):' }); continue }
+			5 { $Script:Output.Where({ $_ -match '^(FATAL|RESULT):' }); continue }
 		})
 	if ($OutLog.IsPresent) {
 		$Now = Get-Date -Format "MM-dd-yyyy_HHumm-ss"
@@ -528,6 +557,32 @@ Function Write-LogEntries {
 	$script:Counters = @{"Warning" = 0; "Error" = 0 }
 }
 
+Function Get-CorporateDevices {
+	#https://learn.microsoft.com/en-us/powershell/module/microsoft.graph.devicemanagement/get-mgdevicemanagementmanageddevice?view=graph-powershell-1.0
+	#https://techcommunity.microsoft.com/blog/intunecustomersuccess/understanding-the-intune-device-object-and-user-principal-name/3657593
+	$MgdDeviceParams = @{
+		All      = $true
+		Filter   = "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company'"
+		Property = 'Id,AzureAdDeviceId,UserPrincipalName,AzureAdRegistered'
+	}
+	$MgdDevices = (Initialize-GraphUri -Resource 'deviceManagement/managedDevices' @MgdDeviceParams -Consistency -WhatIf:$false).where({ $_.AzureADRegistered -eq $true })
+	$AADDeviceParams = @{
+		All      = $true
+		Filter   = "OperatingSystem eq 'Windows' and isManaged eq true"
+		Property = 'Id,DeviceId,DisplayName'
+	}
+	$MGDevices = (Initialize-GraphUri -Resource 'devices' @AADDeviceParams -Consistency -WhatIf:$false)
+	if (-not $MGDevices.Count) { throw "No AD synced Azure devices found, cannot continue with device group sync!" }
+	# Add UPN property derived from corresponding managed device object where AzureAdDeviceId = DeviceId
+	foreach ($device in $MGDevices) {
+		$MGDevId = $MgdDevices.Where({ $_.AzureAdDeviceId -eq $device.DeviceId })
+		if ($MGDevId) { $UPN = $MGDevId.userPrincipalName } else { $UPN = $null }
+		Add-Member -InputObject $device -MemberType NoteProperty -Name UserPrincipalName -Value $UPN -Force
+	}
+	Write-LogEntry -Value "Retrieved $($MGDevices.Count) AD synced Windows device objects..." -Severity 0
+	return $MGDevices
+}
+
 Function Get-MDMDeviceInfo {
 	[OutputType([System.Management.Automation.PSCustomObject])]
 	[CmdletBinding(DefaultParameterSetName = 'User')]
@@ -538,32 +593,22 @@ Function Get-MDMDeviceInfo {
 		[Alias('ComputerName')][string]$DeviceName
 	)
 	#https://techcommunity.microsoft.com/t5/intune-customer-success/understanding-the-intune-device-object-and-user-principal-name/ba-p/3657593
-	if ($script:AADDevices.Count -eq 0) {
-		$MgDeviceParams = @{
-			All      = $true
-			Filter   = "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company'"
-			Property = 'Id,AzureAdDeviceId, DeviceName,UserPrincipalName,AzureAdRegistered'
-			#ExpandProperty = 'RegisteredUsers'
-		}
-		$script:AADDevices = (Initialize-GraphUri -Resource 'deviceManagement/managedDevices' @MgDeviceParams -Consistency).where({ $_.AzureADRegistered -eq $true })
-		if (-not $script:AADDevices.Count) { throw "No AD synced Entra devices found, cannot continue with retrieving device info!" }
-		Write-LogEntry -Value "Retrieved $($script:AADDevices.Count) AD synced Windows device objects..." -Severity 0
-	}
-	Write-LogEntry -Value "Getting MDM device(s) for $($PSCmdlet.ParameterSetName): $($UPN)$($DeviceName)" -Severity 0
+	if ($script:AADDevices.Count -eq 0) { $script:AADDevices = Get-CorporateDevices }
+	Write-LogEntry -Value "Getting MDM device(s) for $($PSCmdlet.ParameterSetName): $($UPN)$($DeviceName)" -Severity 2
 	switch ($PSCmdlet.ParameterSetName) {
 		'User' { $Devices = @($script:AADDevices | Where-Object UserPrincipalName -eq $UPN) }
 		'Device' { $Devices = @($script:AADDevices | Where-Object DisplayName -eq $DeviceName) }
 	}
 	if ($Devices) {
-		Write-LogEntry -Value "Getting Owner(s) and/or Registree(s) for $($Devices.Count) device(s)..." -Severity 0
+		Write-LogEntry -Value "Getting Owner(s) and/or Registree(s) for $($Devices.Count) device(s)..." -Severity 2
 		foreach ($Device in ($Devices | Where-Object { $null -ne $_ })) {
 			$DevUri = "$($Script:GraphRoot)/devices/$($Device.Id)"
 			$Owner = (Invoke-RestMethod -Uri "$($DevUri)/registeredOwners" -Method Get -Headers $script:GraphHeader).Value
 			$Device | Add-Member -MemberType NoteProperty 'Owner' -Value $Owner
-			Write-LogEntry -Value "Owner for $($Device.displayName): $($Owner.UserPrincipalName)"
+			Write-LogEntry -Value "Owner for $($Device.displayName): $($Owner.UserPrincipalName)" -Severity 2
 			$Registree = (Invoke-RestMethod -Uri "$($DevUri)/registeredUsers" -Method Get -Headers $script:GraphHeader).Value
 			$Device | Add-Member -MemberType NoteProperty 'Registree' -Value $Registree
-			Write-LogEntry -Value "Registree(s) for $($Device.displayName): $($Registree.UserPrincipalName -join ',')"
+			Write-LogEntry -Value "Registree(s) for $($Device.displayName): $($Registree.UserPrincipalName -join ',')" -Severity 2
 		}#foreach
 	}
 	switch ($Devices.Count) {
@@ -571,7 +616,7 @@ Function Get-MDMDeviceInfo {
 		1 { $Message = "Found single Intune device object {2} with ID {3} for {0}{1}" -f $UPN, $DeviceName, $Devices.DeviceName, $Devices.Id }
 		{ $_ -ge 2 } { $Message = "Multiple Intune device objects found for {0}{1}: {2}" -f $UPN, $DeviceName, $($Devices.DeviceName -join ',') }
 	}
-	Write-LogEntry -Value $Message -Severity 0
+	Write-LogEntry -Value $Message -Severity 2
 	return $Devices
 }
 
@@ -595,9 +640,9 @@ Function Update-AzureGroupMembership {
 	)
 	#create non-existing group only if Users or Devices are present or anyway if CreateEmptyGroup is set
 	[bool]$CreateEmpty = ($Users.count -bor $Devices.count -bor $CreateEmptyGroup.IsPresent)
-	$AzureADGroup = Confirm-AzureGroup -Name $AzureGroupName -CreateGroup:$CreateEmpty
+	$AzureADGroup = Confirm-AzureGroup -Name $AzureGroupName -CreateGroup:$CreateEmpty -Description $Script:Description
 	if ($AzureADGroup) {
-		Write-LogEntry -Value ("Getting members for Azure group: {0} ({1})" -f $AzureADGroup.displayName, $AzureADGroup.Description) -Severity 0
+		Write-LogEntry -Value ("Getting members for Azure group: {0} ({1})" -f $AzureADGroup.displayName, $AzureADGroup.Description) -Severity 2
 		$MemberParams = @{
 			All         = $true
 			#Select      = "Id,DisplayName,UserPrincipalName"
@@ -621,20 +666,20 @@ Function Update-AzureGroupMembership {
 			#compare AD <-> Azure group membership
 			if ($ManagedMembers) { $Members2Sync = Compare-Object -ReferenceObject $ManagedMembers -DifferenceObject $Members2Compare -Property Id -PassThru }
 			else {
-				Write-LogEntry -Value "Syncing ALL AD onprem users/devices to (new) Azure group..." -Severity 0
+				Write-LogEntry -Value "Syncing ALL AD onprem users/devices to (new) Azure group..."
 				$Members2Sync = $Members2Compare
 				# add SideIndicator explicitly for sync routine
 				$Members2Sync | Add-Member -MemberType NoteProperty -Name 'SideIndicator' -Value "=>" -ErrorAction SilentlyContinue
 			}
 		}
 		else {
-			Write-LogEntry -Value "Empty AD group found, removing all (AD managed) members from Azure group..." -Severity 0
+			Write-LogEntry -Value "Empty AD group found, removing all (AD managed) members from Azure group..."
 			$Members2Sync = $ManagedMembers
 			# add SideIndicator explicitly for sync routine
 			$Members2Sync | Add-Member -MemberType NoteProperty -Name 'SideIndicator' -Value "<=" -ErrorAction SilentlyContinue
 		}
 		if ($Members2Sync) {
-			Write-LogEntry -Value "GroupMembership: Found $($Members2Sync.Count) $($PSCmdlet.ParameterSetName) objects to sync to $($AzureADGroup.displayName). Processing..." -Severity 0
+			Write-LogEntry -Value "GroupMembership: Found $($Members2Sync.Count) $($PSCmdlet.ParameterSetName) objects to sync to $($AzureADGroup.displayName). Processing..."
 			$Members2Add = @($Members2Sync | Where-Object { $_.SideIndicator -eq '=>' })
 			$Members2Remove = @($Members2Sync | Where-Object { $_.SideIndicator -eq '<=' })
 			if ($PSCmdlet.ShouldProcess("Sync membership of $($PSCmdlet.ParameterSetName)s to $($AzureGroupName)", $AzureGroupName, 'Sync GroupMembership')) {
@@ -646,7 +691,7 @@ Function Update-AzureGroupMembership {
 						for ($i = 0; $i -lt $Members2Add.Count; $i += $GraphBatchSize) {
 							$UpperBound = $i + $GraphBatchSize - 1 #subtract 1 = offset between count and index
 							$MembersBatch = @($Members2Add[$i..$UpperBound]) #array upperbound retrieval is handled gracefully in POSH
-							Write-LogEntry -Value "Processing $($GraphBatchSize) Members2Sync starting from index $($i) to $($UpperBound)/$($Members2Add.Count - 1)"
+							Write-LogEntry -Value "Processing $($GraphBatchSize) Members2Sync starting from index $($i) to $($UpperBound)/$($Members2Add.Count - 1)" -Severity 0
 							if (Assert-InteractiveShell) {
 								$ProgressParams = @{
 									Id              = 2
@@ -660,7 +705,7 @@ Function Update-AzureGroupMembership {
 							$MembersDataBind = @()
 							foreach ($Member2Add in $MembersBatch) { $MembersDataBind += "$($Script:GraphRoot)/directoryObjects/$($Member2Add.Id)" }
 							$GroupUri = "$($Script:GraphRoot)/groups/$($AzureADGroup.Id)"
-							$body = @{"@odata.id" = $MembersDataBind } | ConvertTo-Json
+							$body = @{"members@odata.bind" = $MembersDataBind } | ConvertTo-Json
 							try {
 								#Update-MgGroup -GroupId $AzureADGroup.Id -BodyParameter $body
 								Invoke-RestMethod -Method Patch -Uri $GroupUri -Headers $script:GraphHeader -Body $body -ContentType application/json
@@ -668,10 +713,10 @@ Function Update-AzureGroupMembership {
 							}
 							catch {
 								#to investigate further, see: https://dev.to/kenakamu/identify-which-request-failed-in-microsoft-graph-batch-request-3a07
-								Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 3
+								Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 4
 								$Action = 'FAILED adding to'
 							}
-							Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $($MembersBatch.DisplayName -join ','), $Action, $AzureADGroup.displayName) -Severity 0
+							Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $($MembersBatch.DisplayName -join ','), $Action, $AzureADGroup.displayName) -Severity 2
 						}
 					}
 					else {
@@ -685,7 +730,7 @@ Function Update-AzureGroupMembership {
 								$Action = 'added to'
 							}
 							catch {
-								Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 3
+								Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 4
 								$Action = 'FAILED adding to'
 							}
 							if (Assert-InteractiveShell) {
@@ -698,7 +743,7 @@ Function Update-AzureGroupMembership {
 								}
 								Write-Progress @ProgressParams
 							}
-							Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $Member2Add.DisplayName, $Action, $AzureADGroup.displayName) -Severity 0
+							Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $Member2Add.DisplayName, $Action, $AzureADGroup.displayName) -Severity 2
 						}
 						Write-Progress -Id 2 -Activity $ProgressParams.Activity -Status "Completed adding members..." -Completed
 					}
@@ -725,27 +770,27 @@ Function Update-AzureGroupMembership {
 							$Action = 'removed from'
 						}
 						catch {
-							Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 3
+							Write-LogEntry -Value $(Resolve-GraphRequestError -Response $_.Exception.Response -GraphUri $GroupUri ) -Severity 4
 							$Action = 'FAILED removing from'
 						}
-						Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $Member2Remove.DisplayName, $Action, $AzureADGroup.displayName) -Severity 0
+						Write-LogEntry -Value $("GroupMembership: {0} {1} {2}" -f $Member2Remove.DisplayName, $Action, $AzureADGroup.displayName) -Severity 2
 					}
 					Write-Progress -Id 3 -Activity $ProgressParams.Activity -Status "Completed removing members..." -Completed
 				}
 			}
 			else {
-				Write-LogEntry -Value "Syncing membership of $($PSCmdlet.ParameterSetName)s to $($AzureGroupName) has been skipped due to ConfirmImpact set to: $($ConfirmPreference)" -Severity 1
+				Write-LogEntry -Value "Syncing membership of $($PSCmdlet.ParameterSetName)s to $($AzureGroupName) has been skipped due to ConfirmImpact set to: $($ConfirmPreference)" -Severity 0
 				if ($Members2Add) {
-					foreach ($Member2Add in $members2Add) {	Write-LogEntry -value "GroupMembership: -WHATIF added $($Member2Add.DisplayName) to $($AzureADGroup.displayName)" -Severity 0 }
+					foreach ($Member2Add in $members2Add) {	Write-LogEntry -value "GroupMembership: -WHATIF added $($Member2Add.DisplayName) to $($AzureADGroup.displayName)" -Severity 2 }
 				}
 				if ($Members2Remove) {
-					foreach ($Member2Remove in $Members2Remove) { Write-LogEntry -value "GroupMembership: -WHATIF removed $($Member2Remove.DisplayName) from $($AzureADGroup.displayName)" -Severity 0 }
+					foreach ($Member2Remove in $Members2Remove) { Write-LogEntry -value "GroupMembership: -WHATIF removed $($Member2Remove.DisplayName) from $($AzureADGroup.displayName)" -Severity 2 }
 				}
 			}
 		}
-		else { Write-LogEntry -Value "GroupMembership: No difference between AD and Azure members found, nothing to sync... " -Severity 1 }
+		else { Write-LogEntry -Value "GroupMembership: No difference between AD and Azure members found, nothing to sync... " -Severity 2 }
 	}
-	else { Write-LogEntry -Value "Failure retrieving Azure group $($AzureGroupName) nor created!" -Severity 2 }
+	else { Write-LogEntry -Value "Failure retrieving Azure group $($AzureGroupName) nor created!" -Severity 3 }
 	return $Members2Sync
 }
 
@@ -826,7 +871,6 @@ Function Sync-ADGroups2AAD {
 	v 1.0.0.0 - 13-12-2022 - initial commit of functional but untested script
 	v 2.0.0.0 - 22-07-2025 - conversion of monolithic script into module (finally)
 	v 2.0.1.0 - 07/08-2025 - replaced most MG Graph cmdlets with REST API calls
-						   - ToDo: investigate difference in acceptance of Managed Device ID between Add-MgGroupMemberByRef and GRAPH API call
 #>
 
 	param(
@@ -854,9 +898,9 @@ Function Sync-ADGroups2AAD {
 		[ValidateNotNullOrEmpty()][ValidateSet('OneLevel', 'SubTree', '1', '2')]
 		[string]$SearchScope = 'OneLevel',
 
-		[Parameter(ParameterSetName = "GroupSync", Mandatory, HelpMessage = 'Can be a full or partial (using wildcards) group displayname')]
+		[Parameter(ParameterSetName = "GroupSync", Mandatory, HelpMessage = 'Can be one or multiple full or partial (using wildcards) group displayname')]
 		[SupportsWildcards()]
-		[string]$Group2Sync,
+		[string[]]$Group2Sync,
 
 		[Parameter(HelpMessage = 'Optional AD group holding objects (user/computer/group) to exclude from processing')]
 		[string]$Objects2ExcludeGroup,
@@ -898,13 +942,13 @@ Function Sync-ADGroups2AAD {
 		[switch]$OutLog,
 
 		[Parameter(HelpMessage = "Verbosity of log entry output. 0 for Everything, 1 for Informational (default), 2 for Warning and 3 for Error.")]
-		[ValidateRange(0, 4)][int]$Verbosity = 1
+		[ValidateRange(0, 5)][int]$Verbosity = 1
 	)
 
 	process {
 		[int]$i = 0
 		Do {
-			Write-LogEntry -Value "Processing $($script:ADGroups.Count) AD groups (re)starting at index $($i)..." -Severity 0
+			Write-LogEntry -Value "Processing $($script:ADGroups.Count) AD groups (re)starting at index $($i)..."
 			for (; $i -lt $script:ADGroups.Count; ) {
 				$ADGroup = $script:ADGroups[$i]
 				$i++ #running counter of current ADgroup array index
@@ -929,7 +973,7 @@ Function Sync-ADGroups2AAD {
 							$AdUsers = @($ADMembers | Where-Object { $_.ObjectClass -eq "user" })
 							Write-LogEntry -Value "Processing $($AdUsers.Count) AD users..." -Severity 0
 							Foreach ($User in $AdUsers) {
-								Write-LogEntry -Value "Retrieving Azure Userobject for AD user: $($User.Name)" -Severity 1
+								Write-LogEntry -Value "Retrieving Azure Userobject for AD user: $($User.Name)" -Severity 0
 								$UPN = (Get-ADUser $User).UserPrincipalName
 								switch ($ApplyMembershipTo) {
 									'UserGroup' { $script:AADUsers | Where-Object UserPrincipalName -eq $UPN | ForEach-Object { [void]$Users2Sync.Add($_) } }
@@ -941,8 +985,8 @@ Function Sync-ADGroups2AAD {
 							$AdComputers = @($ADMembers | Where-Object { $_.ObjectClass -eq "computer" })
 							Write-LogEntry -Value "Processing $($AdComputers.Count) AD Computers..." -Severity 0
 							Foreach ($Device in $AdComputers) {
-								$MdmDevices = @($script:AADDevices | Where-Object { $_.DeviceName -eq $Device.Name }) #multiple return by name is possible!
-								Write-LogEntry -Value "Retrieving Azure Device object(s) for AD computer: $($Device.Name) matching $($MdmDevices.Count) Azure Devices" -Severity 1
+								$MdmDevices = @($script:AADDevices | Where-Object { $_.DisplayName -eq $Device.Name }) #multiple return by name is possible!
+								Write-LogEntry -Value "Retrieving Azure Device object(s) for AD computer: $($Device.Name) matching $($MdmDevices.Count) Azure Devices" -Severity 0
 								if ($MdmDevices.Count) {
 									switch ($ApplyMembershipTo) {
 										'UserGroup' { $script:AADUsers.where({ UserPrincipalName -in $MdmDevices.UserPrincipalName }) | ForEach-Object { [void]$Users2Sync.Add($_) } }
@@ -980,27 +1024,24 @@ Function Sync-ADGroups2AAD {
 			if ($script:TokenExpiry -lt $((Get-Date).AddSeconds(600))) {
 				try {
 					New-GraphToken @TokenParams
-					Write-LogEntry -Value "Token (re)acquired and valid until $($script:TokenExpiry)"
+					Write-LogEntry -Value "Token (re)acquired and valid until $($script:TokenExpiry)" -Severity 0
 				}
 				catch {
 					$ConfirmGroups.IsPresent = $false #prevent further processing of groups
-					Write-LogEntry -Value "Token renewal failed, error: $($_.Exception.Message)" -Severity 3
+					Write-LogEntry -Value "Token renewal failed, error: $($_.Exception.Message)" -Severity 4
 					break
 				}
 			}
 		} Until ($i -ge $script:ADGroups.Count)
 		if ($ConfirmGroups.IsPresent) {
 			#https://learn.microsoft.com/en-us/graph/delta-query-overview#use-delta-query-to-track-changes-in-a-resource-collection --> get delta update or full refresh?
-			$AzGroupParams = @{
-				Filter           = "startsWith(DisplayName, '$($AzureGroupPrefix)')"
-				Property         = "Id,CreatedDateTime,DisplayName,Description"
-				OrderBy          = 'DisplayName'
-				ConsistencyLevel = 'eventual'
-				CountVariable    = 'AzGroupCount'
-				All              = $true
+			$MgGroupParams = @{
+				All      = $true
+				Filter   = "startsWith(DisplayName, '$($AzureGroupPrefix)')"
+				Property = "Id,CreatedDateTime,DisplayName,Description"
 			}
-			$script:AADGroups = @(Get-MgGroup @AzGroupParams)
-			Write-LogEntry -Value "Comparing $($AzGroupCount) Azure with onprem AD groups..." -Severity 0
+			$script:AADGroups = (Initialize-GraphUri -Resource 'groups' @MgGroupParams -Consistency -WhatIf:$false)
+			Write-LogEntry -Value "Comparing $($script:AADGroups.Count) Azure with $($script:ADGroups.Count) onprem AD groups..." -Severity 2
 			Confirm-GroupSync -AzureGroups $script:AADGroups -ADGroups $script:ADGroups -AzureGroupPrefix $AzureGroupPrefix
 		}
 	}
@@ -1011,9 +1052,9 @@ Function Sync-ADGroups2AAD {
 		[version]$ScriptVersion = '2.0.1.0'
 		#future improvement to use localized messages
 		#Import-PowerShellDataFile -BindingVariable "SyncStr"
-		$ScriptDescription = "Sync-ADGroups2AAD v{0} run by {1}" -f $ScriptVersion, [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+		$Script:Description = "Sync-ADGroups2AAD v{0} run by {1}" -f $ScriptVersion, [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 		$Script:StartTime = Get-Date
-		Write-LogEntry -Value "RESULT: Starting $($ScriptDescription) on $($Script:StartTime)"
+		Write-LogEntry -Value "RESULT: Starting $($Script:Description) on $($Script:StartTime)" -Severity 0
 		#save connection parameters in splatted hash table to renew token if necessary during script execution
 		$TokenParams = @{
 			TenantID               = $TenantID
@@ -1037,24 +1078,30 @@ Function Sync-ADGroups2AAD {
 					$Groups2Exclude = @($Members2Exclude | Where-Object { $_.ObjectClass -eq 'group' } | Select-Object Name -Unique) + $Objects2ExcludeGroup
 					$Users2Exclude = @($Members2Exclude | Where-Object { $_.ObjectClass -eq 'user' } | Select-Object Name -Unique)
 					$Devices2Exclude = @($Members2Exclude | Where-Object { $_.ObjectClass -eq 'computer' } | Select-Object Name -Unique)
-					Write-LogEntry -Value "All $($Members2Exclude.Count) (direct) member objects of $($Objects2ExcludeGroup) will be excluded from syncing!"
+					Write-LogEntry -Value "All $($Members2Exclude.Count) (direct) member objects of $($Objects2ExcludeGroup) will be excluded from syncing!" -Severity 2
 				}
-				else { Write-LogEntry -Value "Exclusion Group $($Objects2ExcludeGroup) not found! Exiting script to prevent sync of to be excluded objects..." -Severity 4 }
+				else { Write-LogEntry -Value "Exclusion Group $($Objects2ExcludeGroup) not found! Exiting script to prevent sync of to be excluded objects..." -Severity 5 }
 			}
 			switch ($PSCmdlet.ParameterSetName) {
 				'OUSync' {
-					if (-not(Get-ADOrganizationalUnit -Identity $OU2Sync)) { Write-LogEntry -Value "OU lookup failed, skipping <$($OU2Sync)>" -Severity 2 ; break }
+					if (-not(Get-ADOrganizationalUnit -Identity $OU2Sync)) { Write-LogEntry -Value "OU lookup failed, skipping <$($OU2Sync)>" -Severity 4 ; break }
 					$script:ADGroups = @(Get-ADGroup -Filter * -SearchBase $OU2Sync -SearchScope $SearchScope | Where-Object { $_.Name -notin $Groups2Exclude } | Sort-Object -Property Name -Unique )
 					Write-LogEntry -Value "Processing $($script:ADGroups.Count) AD group(s) retrieved from OU: $($OU2Sync)"
 				}
 				'GroupSync' {
-					$script:ADGroups = @(Get-ADgroup -Filter "Name -like '$Group2Sync'" | Where-Object { $_.Name -notin $Groups2Exclude } | Sort-Object -Property Name -Unique)
-					Write-LogEntry -Value "Processing $($script:ADGroups.Count) AD group(s) matching groupname filter: $($Group2Sync)"
+					$script:ADGroups = @()
+					foreach ($Group in @($Group2Sync)) {
+						#use -like to allow wildcard groupname matching
+						try { $script:ADGroups += @(Get-ADgroup -Filter "Name -like '$Group'")}
+						catch { Write-LogEntry -Value "Group lookup failed, skipping <$($Group)> retrieval" -Severity 4 ; continue }
+					}
+					$script:ADGroups = @($script:ADGroups | Where-Object { $_.Name -notin $Groups2Exclude } | Sort-Object -Property Name -Unique)
+					Write-LogEntry -Value "Processing $($script:ADGroups.Count) AD group(s) matching (wildcard) groupname(s): $($Group2Sync)"
 				}
 			}
-			if (-not ($script:ADGroups.Count)) { throw "No AD groups retrieved, cannot continue with AD2AAD sync!" }
-		}
-		catch { Write-LogEntry -Value "Failed to query Active Directory due to $($_.Exception.Message), exiting script..." -Severity 4 }
+				if (-not ($script:ADGroups.Count)) { throw "No AD groups retrieved, cannot continue with AD2AAD sync!" }
+			}
+		catch { Write-LogEntry -Value "Failed to query Active Directory due to $($_.Exception.Message), exiting script..." -Severity 5 }
 		#replace <All> with array of all objects to sync from and to
 		switch ($Objects2Sync) {
 			'All' { $ApplyMembershipFrom = @('Users', 'Devices') }
@@ -1064,7 +1111,7 @@ Function Sync-ADGroups2AAD {
 			'All' { $ApplyMembershipTo = @('UserGroup', 'DeviceGroup') }
 			Default { $ApplyMembershipTo = @($DestinationGroupType) }
 		}
-		Write-LogEntry -Value "GroupMember object types to sync from: AD $([string]::Join(' & ',$ApplyMembershipFrom)) to: Azure $([string]::Join(' & ',$ApplyMembershipTo))"
+		Write-LogEntry -Value "GroupMember object types to sync from: AD $([string]::Join(' & ',$ApplyMembershipFrom)) to: Azure $([string]::Join(' & ',$ApplyMembershipTo))" -Severity 2
 		#get used UserPrincipalName(s) present in onprem AD
 		$script:CompanyUPNs = @((Get-ADForest).UPNSuffixes)
 		#set default logfile save location
@@ -1085,28 +1132,11 @@ Function Sync-ADGroups2AAD {
 				OrderBy  = 'Id'
 			}
 			$script:AADUsers = (Initialize-GraphUri -Resource 'users' @MgUserParams -Consistency -WhatIf:$false)
-			if (-not $script:AADUsers.Count) { throw "No AD synced Entra users found, cannot continue with user group sync!" }
-			Write-LogEntry -Value "Retrieved $($script:AADUsers.Count) AD synced Entra users..." -Severity 0
+			if (-not $script:AADUsers.Count) { throw "No AD synced Azure users found, cannot continue with user group sync!" }
+			Write-LogEntry -Value "Retrieved $($script:AADUsers.Count) AD synced Azure users..." -Severity 0
 		}
 		#no need to retrieve devices if only user objects are processed
-		if (('DeviceGroup' -in $ApplyMembershipTo) -or ($ApplyMembershipFrom -contains 'Devices')) {
-			#https://learn.microsoft.com/en-us/powershell/module/microsoft.graph.devicemanagement/get-mgdevicemanagementmanageddevice?view=graph-powershell-1.0
-			#https://techcommunity.microsoft.com/blog/intunecustomersuccess/understanding-the-intune-device-object-and-user-principal-name/3657593
-			$MgDeviceParams = @{
-				All      = $true
-				Filter   = "OperatingSystem eq 'Windows' and ManagedDeviceOwnerType eq 'company'"
-				#Property = 'Id,DeviceName,UserPrincipalName,IsManaged'
-				#Property = 'AzureAdDeviceId, DeviceName,UserPrincipalName,AzureAdRegistered'
-				Property = 'Id, DeviceName,UserPrincipalName,AzureAdRegistered'
-				#ExpandProperty = 'RegisteredUsers'
-			}
-			#$script:AADDevices = (Initialize-GraphUri -Resource 'devices' @MgDeviceParams -Consistency).where({ $_.IsManaged })
-			$script:AADDevices = (Initialize-GraphUri -Resource 'deviceManagement/managedDevices' @MgDeviceParams -Consistency -WhatIf:$false).where({ $_.AzureADRegistered -eq $true })
-			if (-not $script:AADDevices.Count) { throw "No AD synced Entra devices found, cannot continue with device group sync!" }
-			#$script:AADDevices | ForEach-Object { Add-Member -InputObject $_ -MemberType AliasProperty -Name Id -Value AzureAdDeviceId -Force } #AzureAdDeviceId is actual Id of object in Azure to be used for group membership
-			$script:AADDevices | ForEach-Object { Add-Member -InputObject $_ -MemberType AliasProperty -Name DisplayName -Value DeviceName -Force } #DeviceName equals DisplayName of object in Azure
-			Write-LogEntry -Value "Retrieved $($script:AADDevices.Count) AD synced Windows device objects..." -Severity 0
-		}
+		if (('DeviceGroup' -in $ApplyMembershipTo) -or ($ApplyMembershipFrom -contains 'Devices')) { $script:AADDevices = Get-CorporateDevices }
 		$MgGroupParams = @{
 			All      = $true
 			Filter   = "startsWith(DisplayName, '$($AzureGroupPrefix)')"
@@ -1114,12 +1144,12 @@ Function Sync-ADGroups2AAD {
 		}
 		$script:AADGroups = (Initialize-GraphUri -Resource 'groups' @MgGroupParams -Consistency -WhatIf:$false)
 		if (-not $script:AADGroups.Count) { throw "No Azure groups found, cannot continue with group sync!" }
-		Write-LogEntry -Value "Retrieved $($GroupCount) Entra groups starting with the prefix $($AzureGroupPrefix)..." -Severity 0
+		Write-LogEntry -Value "Retrieved $($script:AADGroups.Count) Azure groups starting with the prefix $($AzureGroupPrefix)..." -Severity 0
 		#endregion script variables
 		#https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_trap?view=powershell-5.1
 		#trap all errors and write them to output stream
 		trap {
-			[Void]$Script:Output.Add("FATAL: Terminal Error occured in script $($ScriptDescription), see details below:")
+			[Void]$Script:Output.Add("FATAL: Terminal Error occured in script $($Script:Description), see details below:")
 			[Void]$Script:Output.Add("FATAL: $($_.InvocationInfo.PositionMessage)")
 			[Void]$Script:Output.Add("FATAL: $($_.Exception.Message)$($nl)")
 			return $Script:Output
@@ -1128,31 +1158,33 @@ Function Sync-ADGroups2AAD {
 	}
 
 	end {
-		Write-LogEntry -Value "RESULT: Script $($ScriptDescription) finished at $(Get-Date) with $($script:Counters["Error"]) error(s)"
+		Write-LogEntry -Value "RESULT: Script $($Script:Description) finished at $(Get-Date) with $($script:Counters["Error"]) error(s)" -Severity 0
 		Write-LogEntries -SyncType $PSCmdlet.ParameterSetName -OutLog:$OutLog -Verbosity $Verbosity
 	}
 }
 
-#Explicit export of functions to module scope
-$FunctionsToExport = @(
-	'Assert-InteractiveShell',
-	'Assert-GroupName',
-	'Confirm-AzureGroup',
-	'Confirm-GroupSync',
-	'Expand-RESTObject',
-	'Get-GraphQueryResults',
-	'Get-MDMDeviceInfo',
-	'Get-MGConnection',
-	'Initialize-GraphUri',
-	'New-GraphToken',
-	'Resolve-AzureGroup',
-	'Resolve-Duplicates',
-	'Resolve-GraphRequestError',
-	'Select-GraphRoot',
-	'Sync-ADGroups2AAD',
-	'Update-AzureGroupMembership',
-	'Write-LogEntry',
-	'Write-LogEntries'
-)
-Export-ModuleMember -Function $FunctionsToExport
-#Select-GraphRoot -GraphEnvironment Production
+if ($null -eq $MyInvocation.MyCommand.Path) {
+	#Explicit export of functions to module scope when psm1 is called directly
+	$FunctionsToExport = @(
+		'Assert-InteractiveShell',
+		'Assert-GroupName',
+		'Confirm-AzureGroup',
+		'Confirm-GroupSync',
+		'Expand-RESTObject',
+		'Get-GraphQueryResults',
+		'Get-MDMDeviceInfo',
+		'Get-MGConnection',
+		'Initialize-GraphUri',
+		'New-GraphToken',
+		'Resolve-AzureGroup',
+		'Resolve-Duplicates',
+		'Resolve-GraphRequestError',
+		'Select-GraphRoot',
+		'Sync-ADGroups2AAD',
+		'Update-AzureGroupMembership',
+		'Write-LogEntry',
+		'Write-LogEntries'
+	)
+	Export-ModuleMember -Function $FunctionsToExport
+	#Select-GraphRoot -GraphEnvironment Production
+}
