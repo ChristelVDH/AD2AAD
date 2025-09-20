@@ -1171,6 +1171,7 @@ if ($null -eq $MyInvocation.MyCommand.Path) {
 		'Confirm-AzureGroup',
 		'Confirm-GroupSync',
 		'Expand-RESTObject',
+		'Get-CorporateDevices',
 		'Get-GraphQueryResults',
 		'Get-MDMDeviceInfo',
 		'Get-MGConnection',

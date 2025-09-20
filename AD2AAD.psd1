@@ -15,6 +15,7 @@
         'Confirm-AzureGroup',
         'Confirm-GroupSync',
         'Expand-RESTObject',
+        'Get-CorporateDevices',
         'Get-GraphQueryResults',
         'Get-MDMDeviceInfo',
         'Get-MGConnection',
