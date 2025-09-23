@@ -2,19 +2,20 @@
     # Script module or binary module file associated with this manifest
     RootModule        = 'AD2AAD.psm1'
     NestedModules     = @()
-    ModuleVersion     = '1.0.4'
-    GUID              = '5269e99f-0a2d-4048-9fc7-e9af12d8ab68'
+    ModuleVersion     = '1.0.2'
+    GUID              = 'b7e7e7e7-7e7e-7e7e-7e7e-b7e7e7e7e7e7'
     Author            = 'Christel Van der Herten'
     CompanyName       = 'KICTS'
     Description       = 'AD2AAD PowerShell module for Azure AD group sync and management.'
     PowerShellVersion = '5.1'
-	CompatiblePSEditions = @('Desktop')								   
+    CompatiblePSEditions = @('Desktop')
     FunctionsToExport = @(
         'Assert-InteractiveShell',
         'Assert-GroupName',
         'Confirm-AzureGroup',
         'Confirm-GroupSync',
         'Expand-RESTObject',
+        'Get-AzureGroupMembers',
         'Get-CorporateDevices',
         'Get-GraphQueryResults',
         'Get-MDMDeviceInfo',
