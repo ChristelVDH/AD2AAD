@@ -2,7 +2,7 @@
     # Script module or binary module file associated with this manifest
     RootModule        = 'AD2AAD.psm1'
     NestedModules     = @()
-    ModuleVersion     = '1.0.2'
+    ModuleVersion     = '1.0.2.3'
     GUID              = 'b7e7e7e7-7e7e-7e7e-7e7e-b7e7e7e7e7e7'
     Author            = 'Christel Van der Herten'
     CompanyName       = 'KICTS'
